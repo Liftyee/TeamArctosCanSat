@@ -1,8 +1,6 @@
-// An example of the SoftSpiDriver template class.
-// This example is for an old Adafruit Data Logging Shield on a Mega.
-// Software SPI is required on Mega since this shield connects to pins 10-13.
-// This example will also run on an Uno and other boards using software SPI.
-//
+// CanSat Board Test
+// Reminder to edit SdFatConfig.h Config
+
 #include "SdFat.h"
 #undef SPI_DRIVER_SELECT
 #define SPI_DRIVER_SELECT 2
@@ -47,6 +45,18 @@ FsFile file;
 
 #define DATAFILE "data.txt"
 
+#define RED 20
+#define GRN 19
+#define BLU 18
+
+#define ON_OFF 13
+#define PRIME 12
+#define ADC 26
+
+#define S_ERROR 255,0,0
+#define S_NORMAL 0,255,0
+#define S_WAIT 0,0,255
+
 #include <Wire.h>
 #include <SPI.h>
 #include <Adafruit_Sensor.h>
@@ -62,49 +72,74 @@ FsFile file;
 Adafruit_BME280 bme(BME_CS, BME_MOSI, BME_MISO, BME_SCK); // software SPI
 unsigned long delayTime;
 
+long long lastSync;
+
 void setup() {
+  showStatus(S_WAIT);
   Serial.begin(9600);
   // Wait for USB Serial
-  while (!Serial) {
+  while (!Serial && !digitalRead(PRIME) && !digitalRead(ON_OFF)) {
     yield();
   }
-  Serial.println("Type any character to start");
-  while (!Serial.available()) {
+  Serial.println("Press PRIME to start");
+  while (!Serial.available() && !digitalRead(PRIME) && !digitalRead(ON_OFF)) {
     yield();
   }
 
   unsigned status;
   status = bme.begin();
   if (!sd.begin(SD_CONFIG)) {
+    showStatus(S_ERROR);
     sd.initErrorHalt();
   }
 
-    if (!status) {
-        Serial.println("Could not find a valid BME280 sensor, check wiring, address, sensor ID!");
-        Serial.print("SensorID was: 0x"); Serial.println(bme.sensorID(),16);
-        Serial.print("        ID of 0xFF probably means a bad address, a BMP 180 or BMP 085\n");
-        Serial.print("   ID of 0x56-0x58 represents a BMP 280,\n");
-        Serial.print("        ID of 0x60 represents a BME 280.\n");
-        Serial.print("        ID of 0x61 represents a BME 680.\n");
-        while (1) delay(10);
-    }
-        delayTime = 1000;
+  if (!status) {
+      Serial.println("Could not find a valid BME280 sensor, check wiring, address, sensor ID!");
+      Serial.print("SensorID was: 0x"); Serial.println(bme.sensorID(),16);
+      Serial.print("        ID of 0xFF probably means a bad address, a BMP 180 or BMP 085\n");
+      Serial.print("   ID of 0x56-0x58 represents a BMP 280,\n");
+      Serial.print("        ID of 0x60 represents a BME 280.\n");
+      Serial.print("        ID of 0x61 represents a BME 680.\n");
+      showStatus(S_ERROR);
+      while (1) delay(10);
+  }
+  delayTime = 1000;
 
   // O_WRITE: write-only to the file
   // O_APPEND: always append to the file
   // O_CREAT: create the file if needed
   // O_SYNC: sync all buffered data after each write (to prevent data loss)
-//  if (!file.open(DATAFILE, O_WRITE | O_APPEND | O_CREAT | O_SYNC)) {
-//    sd.errorHalt(F("file open failed"));
-//  }
+  if (!file.open(DATAFILE, O_WRITE | O_APPEND | O_CREAT | O_SYNC)) {
+    showStatus(S_ERROR);
+    sd.errorHalt(F("file open failed"));
+  }
   
   Serial.println(F("Done."));
+  showStatus(S_NORMAL);
+  lastSync = millis();
 }
 //------------------------------------------------------------------------------
+
 void loop() {
     printValues();
-    logVerboseValues();
+    //logVerboseValues();
+    logValues();
+    checkSync();
     delay(delayTime);
+}
+
+
+#define SYNC_INTERVAL 5000
+void checkSync() {
+  if (millis()-lastSync > SYNC_INTERVAL) {
+    file.close();
+    if (!file.open(DATAFILE, O_WRITE | O_APPEND | O_CREAT | O_SYNC)) {
+      showStatus(S_ERROR);
+      sd.errorHalt(F("file open failed"));
+    }
+    Serial.println("Reopened file");
+    lastSync = millis();
+  }
 }
 
 void printValues() {
@@ -131,6 +166,7 @@ void printValues() {
 
 void logVerboseValues() {
     if (!file.open(DATAFILE, O_WRITE | O_APPEND | O_CREAT | O_SYNC)) {
+      showStatus(S_ERROR);
       sd.errorHalt(F("file open failed"));
     }
     file.print("Temperature = ");
@@ -169,6 +205,12 @@ void logValues() {
     file.print(bme.readHumidity());
 
     file.println();
+}
+
+void showStatus(byte r, byte g, byte b) {
+  analogWrite(RED, 255-r);
+  analogWrite(GRN, 255-g);
+  analogWrite(BLU, 255-b);
 }
 #else  // SPI_DRIVER_SELECT
 #error SPI_DRIVER_SELECT must be two in SdFat/SdFatConfig.h
