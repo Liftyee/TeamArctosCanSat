@@ -78,11 +78,11 @@ void setup() {
   showStatus(S_WAIT);
   Serial.begin(9600);
   // Wait for USB Serial
-  while (!Serial && !digitalRead(PRIME) && !digitalRead(ON_OFF)) {
+  while (!Serial && !digitalRead(PRIME)) {
     yield();
   }
   Serial.println("Press PRIME to start");
-  while (!Serial.available() && !digitalRead(PRIME) && !digitalRead(ON_OFF)) {
+  while (!Serial.available() && !digitalRead(PRIME)) {
     yield();
   }
 
@@ -125,9 +125,20 @@ void loop() {
     //logVerboseValues();
     logValues();
     checkSync();
+    checkEnd();
     delay(delayTime);
 }
 
+void checkEnd() {
+  if (digitalRead(ON_OFF)) {
+    file.close();
+    Serial.println("Closing up files");
+    showStatus(S_WAIT);
+    while (1) {
+      yield();
+    }
+  }
+}
 
 #define SYNC_INTERVAL 5000
 void checkSync() {
