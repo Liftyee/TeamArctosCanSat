@@ -13,12 +13,12 @@
 #define SD_FAT_TYPE 1
 //
 // Chip select may be constant or RAM variable.
-const uint8_t SD_CS_PIN = 1;
+const uint8_t SD_CS_PIN = 13;
 //
 // Pin numbers in templates must be constants.
-const uint8_t SOFT_MISO_PIN = 3;
-const uint8_t SOFT_MOSI_PIN = 0;
-const uint8_t SOFT_SCK_PIN  = 2;
+const uint8_t SOFT_MISO_PIN = 12;
+const uint8_t SOFT_MOSI_PIN = 15;
+const uint8_t SOFT_SCK_PIN  = 14;
 
 // SdFat software SPI template
 SoftSpiDriver<SOFT_MISO_PIN, SOFT_MOSI_PIN, SOFT_SCK_PIN> softSpi;
