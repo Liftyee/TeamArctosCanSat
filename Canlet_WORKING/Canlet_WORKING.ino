@@ -25,6 +25,7 @@
 #define SD_MOSI 15
 #define SD_SCK 14
 #define SD_CS 13
+#define FORCE_SENS 28
 
 #define SD_FAT_TYPE 1
 
@@ -127,7 +128,7 @@ void clearSerialInput() {
 }
 //------------------------------------------------------------------------------
 
-#define fileName "data.csv"
+char fileName[20] = "data.csv";
 BufferedPrint<file_t, 64> file;
 file_t baseFile;
 void initSD() {
@@ -355,11 +356,11 @@ void setup() {
   digitalWrite(STATUS_L, LOW);
   Serial.begin(1000000);
   
-  while (!Serial) {
-    digitalWrite(STATUS_L, !digitalRead(STATUS_L));
-    yield();
-    delay(100);
-  }
+//  while (!Serial) {
+//    digitalWrite(STATUS_L, !digitalRead(STATUS_L));
+//    yield();
+//    delay(100);
+//  }
   delay(2000);
   initBMP();
   Serial.println("SHTC3 test");
@@ -375,16 +376,17 @@ void setup() {
 }
 
 long long i = 0;
-
+int fileidx = 0;
 void loop() {
   logData();
   digitalWrite(STATUS_L, !digitalRead(STATUS_L));
   i++;
-  if (i > 1000) {
-    Serial.print("Done ");
-    Serial.println(millis()-startMillis);
+  if (i > 500) {
     baseFile.close();
-    while(1){};
+    sprintf(fileName, "data%d.csv", fileidx);
+    fileidx++;
+    baseFile.open(fileName, O_RDWR | O_CREAT | O_APPEND | O_SYNC);
+    i = 0;
   }
 }
 
@@ -444,13 +446,14 @@ void logData() {
     sensors_event_t humidity, temp;
   
     shtc3.getEvent(&humidity, &temp);// populate temp and humidity objects with fresh data
-    pf(micros());
+    pf(millis());
     pf(temp.temperature);
     pf(humidity.relative_humidity);
 
     pf(bmp.readTemperature());
     pf(bmp.readPressure());
-    pf(bmp.readAltitude(1013.25)); /* Adjusted to local forecast! */
+    pf(bmp.readAltitude(1026)); /* Adjusted to local forecast! */
+    pf(analogRead(FORCE_SENS));
 
       //  /* Get a new normalized sensor event */
 //    sensors_event_t accel;

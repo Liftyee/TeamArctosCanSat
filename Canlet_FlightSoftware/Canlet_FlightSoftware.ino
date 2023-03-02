@@ -1,30 +1,55 @@
 /***************************************************************************
-  This is a library for the BMP280 humidity, temperature & pressure sensor
-
-  Designed specifically to work with the Adafruit BMP280 Breakout
-  ----> http://www.adafruit.com/products/2651
-
-  These sensors use I2C or SPI to communicate, 2 or 4 pins are required
-  to interface.
-
-  Adafruit invests time and resources providing this open source code,
-  please support Adafruit andopen-source hardware by purchasing products
-  from Adafruit!
-
-  Written by Limor Fried & Kevin Townsend for Adafruit Industries.
-  BSD license, all text above must be included in any redistribution
+  Canlet Flight Software
+  
+  Victor Liu @ Team Arctos, 2023
  ***************************************************************************/
 
 #include "SdFat.h"
 #include "sdios.h"
 #include "BufferedPrint.h"
 
+#define DEBUG
 #define pf(s) file.printField(s,',')
+#define spd(s) Serial.print(s);Serial.print(",")
+
+#define MSL_ALT_CONST 1013.25
+
+#define I2C_SDA 20
+#define I2C_SCL 21
+#define STATUS_L 17
+
+#define LSM_CS 1
+#define LSM_SCK 2
+#define LSM_MISO 4
+#define LSM_MOSI 7
+#define LSM_INT1 3
+#define LSM_INT2 0
+
+#define LORA_CS 10
+#define LORA_RST 11
+#define LORA_IRQ 8
+#define LORA_FREQ 433920000
 
 #define SD_MISO 12
 #define SD_MOSI 15
 #define SD_SCK 14
 #define SD_CS 13
+
+#define FORCE_SENS 29
+
+#define BMP_FLAG 0b10000000
+#define SHT_FLAG 0b01000000
+#define IMU_FLAG 0b00100000
+#define VEML_FLAG 0b00010000
+#define SD_FLAG 0b00001000
+#define LORA_FLAG 0b00000100
+byte sensFlags; // flags: BMP280, SHTC3, IMU, VEML, SD, LoRa
+
+#define fileName "data.csv"
+
+#include <Wire.h>
+#include <SPI.h>
+#include <LoRa.h>
 
 #define SD_FAT_TYPE 1
 
@@ -35,11 +60,11 @@ const uint8_t SD_CS_PIN = SD_CS;
 const uint8_t SD_CS_PIN = SDCARD_SS_PIN;
 #endif  // SDCARD_SS_PIN
 
-#define SPI_CLOCK SD_SCK_MHZ(50)
+#define SPI_CLOCK SD_SCK_MHZ(10)
+//#undef ENABLE_DEDICATED_SPI
+//#define ENABLE_DEDICATED_SPI 0
 // Try to select the best SD card configuration.
-#if HAS_SDIO_CLASS
-#define SD_CONFIG SdioConfig(FIFO_SDIO)
-#elif ENABLE_DEDICATED_SPI
+#if ENABLE_DEDICATED_SPI
 #define SD_CONFIG SdSpiConfig(SD_CS_PIN, DEDICATED_SPI, SPI_CLOCK, &SPI1)
 #else  // HAS_SDIO_CLASS
 #define SD_CONFIG SdSpiConfig(SD_CS_PIN, SHARED_SPI, SPI_CLOCK, &SPI1)
@@ -89,34 +114,9 @@ typedef FsFile file_t;
 #error Invalid SD_FAT_TYPE
 #endif  // SD_FAT_TYPE
 
-// Serial output stream
-ArduinoOutStream cout(Serial);
 //------------------------------------------------------------------------------
 // Store error strings in flash to save RAM.
 #define error(s) sd.errorHalt(&Serial, F(s))
-//------------------------------------------------------------------------------
-void cidDmp() {
-  cid_t cid;
-  if (!sd.card()->readCID(&cid)) {
-
-    error("readCID failed");
-  }
-  cout << F("\nManufacturer ID: ");
-  cout << hex << int(cid.mid) << dec << endl;
-  cout << F("OEM ID: ") << cid.oid[0] << cid.oid[1] << endl;
-  cout << F("Product: ");
-  for (uint8_t i = 0; i < 5; i++) {
-    cout << cid.pnm[i];
-  }
-  cout << F("\nVersion: ");
-  cout << int(cid.prv_n) << '.' << int(cid.prv_m) << endl;
-  cout << F("Serial number: ") << hex << cid.psn << dec << endl;
-  cout << F("Manufacturing date: ");
-  cout << int(cid.mdt_month) << '/';
-  cout << (2000 + cid.mdt_year_low + 10 * cid.mdt_year_high) << endl;
-  cout << endl;
-}
-//------------------------------------------------------------------------------
 void clearSerialInput() {
   uint32_t m = micros();
   do {
@@ -127,7 +127,6 @@ void clearSerialInput() {
 }
 //------------------------------------------------------------------------------
 
-#define fileName "data.csv"
 BufferedPrint<file_t, 64> file;
 file_t baseFile;
 void initSD() {
@@ -136,48 +135,51 @@ void initSD() {
   SPI1.setSCK(SD_SCK);
   SPI1.setCS(SD_CS);
 
-  if (!ENABLE_DEDICATED_SPI) {
-    cout << F(
-      "\nSet ENABLE_DEDICATED_SPI nonzero in\n"
-      "SdFatConfig.h for best SPI performance.\n");
-  }
-  // use uppercase in hex and use 0X base prefix
-  cout << uppercase << showbase << endl;
-
+  Serial.print("Dedicated SPI is "); Serial.println(ENABLE_DEDICATED_SPI);
   if (!sd.begin(SD_CONFIG)) {
-    sd.initErrorHalt(&Serial);
+    #ifdef DEBUG
+      sd.initErrorPrint(&Serial);
+    #endif
+    Serial.print("SD init failed");
+    return;
   }
 
   if (sd.fatType() == FAT_TYPE_EXFAT) {
-    cout << F("Type is exFAT") << endl;
+    Serial.println(F("Type is exFAT"));
   } else {
-    cout << F("Type is FAT") << int(sd.fatType()) << endl;
+    Serial.println(int(sd.fatType()));
   }
 
-
-  cout << F("Card size: ") << sd.card()->sectorCount()*512E-9;
-  cout << F(" GB (GB = 1E9 bytes)") << endl;
-
-  cidDmp();
+  Serial.println(sd.card()->sectorCount()*512E-9);
 
   if (!baseFile.open(fileName, O_RDWR | O_CREAT | O_APPEND | O_SYNC)) {
-    Serial.print("Couldn't open file!");
+    Serial.println("Couldn't open file!");
+    return;
   }
 
   file.begin(&baseFile);
+
+  Serial.println("SD init success!");
+  sensFlags |= SD_FLAG;
 }
 
-#include <Wire.h>
-#include <SPI.h>
+void initLoRa() {
+  // NOTE: Requires SPI pins to already be set! 
+  LoRa.setSPI(SPI1);
+  LoRa.setPins(LORA_CS, LORA_RST, LORA_IRQ);
+  
+  if (!LoRa.begin(LORA_FREQ)) {
+    Serial.println("Starting LoRa failed!");
+    return;
+  }  
+  sensFlags |= LORA_FLAG;
+}
+
 #include <Adafruit_BMP280.h>
-
-#define I2C_SDA 20
-#define I2C_SCL 21
-#define STATUS_L 17
-
 Adafruit_BMP280 bmp; // I2C
-//Adafruit_BMP280 bmp(BMP_CS); // hardware SPI
-//Adafruit_BMP280 bmp(BMP_CS, BMP_MOSI, BMP_MISO,  BMP_SCK);
+
+#include "Adafruit_VEML7700.h"
+Adafruit_VEML7700 veml = Adafruit_VEML7700();
 
 // Actually needs Liftyee/GXHTC3 library! 
 #include "Adafruit_SHTC3.h"
@@ -185,26 +187,19 @@ Adafruit_BMP280 bmp; // I2C
 Adafruit_SHTC3 shtc3 = Adafruit_SHTC3();
 
 #include <Adafruit_LSM6DSOX.h>
-// For SPI mode, we need a CS pin
-#define LSM_CS 1
-// we need SCK/MOSI/MISO pins
-#define LSM_SCK 2
-#define LSM_MISO 4
-#define LSM_MOSI 7
+
 
 Adafruit_LSM6DSOX sox;
 
 void initIMU() {
-  SPI.setRX(4);
-  SPI.setTX(7);
-  SPI.setSCK(2);
-  SPI.setCS(1);
-  if (!sox.begin_SPI(1)) {
+  SPI.setRX(LSM_MISO);
+  SPI.setTX(LSM_MOSI);
+  SPI.setSCK(LSM_SCK);
+  SPI.setCS(LSM_CS);
+  if (!sox.begin_SPI(LSM_CS)) {
     // if (!sox.begin_SPI(LSM_CS, LSM_SCK, LSM_MISO, LSM_MOSI)) {
     Serial.println("Failed to find LSM6DSOX chip");
-    while (1) {
-      delay(10);
-    }
+    return;
   }
   Serial.println("LSM6DSOX Found!");
 
@@ -322,10 +317,11 @@ void initIMU() {
     Serial.println("6.66 KHz");
     break;
   }
+  sensFlags |= IMU_FLAG;
 }
 
 void initBMP() {
-  Serial.println(F("BMP280 test"));
+  Serial.println(F("finding BMP280..."));
   unsigned status;
   //status = bmp.begin(BMP280_ADDRESS_ALT, BMP280_CHIPID);
   Wire.setSCL(21);
@@ -339,7 +335,7 @@ void initBMP() {
     Serial.print("   ID of 0x56-0x58 represents a BMP 280,\n");
     Serial.print("        ID of 0x60 represents a BME 280.\n");
     Serial.print("        ID of 0x61 represents a BME 680.\n");
-    while (1) delay(10);
+    return;
   }
 
   /* Default settings from datasheet. */
@@ -348,49 +344,163 @@ void initBMP() {
                   Adafruit_BMP280::SAMPLING_X16,    /* Pressure oversampling */
                   Adafruit_BMP280::FILTER_X16,      /* Filtering. */
                   Adafruit_BMP280::STANDBY_MS_500); /* Standby time. */
+  Serial.println("BMP280 found!");
+  sensFlags |= BMP_FLAG;
 }
-long startMillis;
-void setup() {
-  pinMode(STATUS_L, OUTPUT);
-  digitalWrite(STATUS_L, LOW);
-  Serial.begin(1000000);
-  
-  while (!Serial) {
-    digitalWrite(STATUS_L, !digitalRead(STATUS_L));
-    yield();
-    delay(100);
-  }
-  delay(2000);
-  initBMP();
+
+void initSHT() {
   Serial.println("SHTC3 test");
   if (! shtc3.begin()) {
     Serial.println("Couldn't find SHTC3");
-    while (1) delay(1);
+    return;
   }
   Serial.println("Found SHTC3 sensor");
-  //initIMU();
+  sensFlags |= SHT_FLAG;
+}
 
+void initVEML() {
+  if (!veml.begin()) {
+    Serial.println("VEML Sensor not found");
+  }
+  Serial.println("VEML Sensor found");
+  sensFlags |= VEML_FLAG;
+}
+
+long startMillis;
+void setup() {
+  sensFlags = 0;
+  pinMode(STATUS_L, OUTPUT);
+  digitalWrite(STATUS_L, LOW);
+  Serial.begin(115200);
+  delay(2000);
+  Serial.print("Waking up...");
   initSD();
+  Serial.print("SD done...");
+  initBMP();
+  Serial.print("BMP done...");
+  initSHT();
+  Serial.print("SHT done...");
+  //initSD();
+  //delay(2000);
+  //initIMU();
   startMillis = millis();
+  Serial.print("starting reading from sensor...");
 }
 
 long long i = 0;
 
+int forceV;
 void loop() {
-  logData();
   digitalWrite(STATUS_L, !digitalRead(STATUS_L));
-  i++;
-  if (i > 1000) {
-    Serial.print("Done ");
-    Serial.println(millis()-startMillis);
-    baseFile.close();
-    while(1){};
+  Serial.print("reading..."); Serial.print(sensFlags, BIN);
+  getBMPData();
+  getSHTData();
+//  if (sensFlags & IMU_FLAG) {
+//    getIMUData();
+//  }
+//  if (sensFlags & VEML_FLAG) {
+//    getVEMLData();
+//  }
+  forceV = analogRead(FORCE_SENS);
+  delay(100);
+
+  printShortData();
+  if (sensFlags | SD_FLAG) {
+    Serial.print("writing...");
+    logData();     
   }
+  if (sensFlags | LORA_FLAG) {
+    transmitData();
+  }
+}
+sensors_event_t humidity, temp, accel, gyro, itemp;
+float btemp, pressure, altitude, lux;
+
+
+void getBMPData() {
+  btemp = bmp.readTemperature();
+  pressure = bmp.readPressure();
+  altitude = bmp.readAltitude(MSL_ALT_CONST);
+}
+
+void getIMUData() {
+  sox.getEvent(&accel, &gyro, &itemp);
+}
+
+void getSHTData() {
+  shtc3.getEvent(&humidity, &temp);
+}
+
+void getVEMLData() {
+  // to read lux using automatic method, specify VEML_LUX_AUTO
+  lux = veml.readLux(VEML_LUX_AUTO);
+
+  Serial.println("------------------------------------");
+  Serial.print("Lux = "); Serial.println(lux);
+  Serial.println("Settings used for reading:");
+  Serial.print(F("Gain: "));
+  switch (veml.getGain()) {
+    case VEML7700_GAIN_1: Serial.println("1"); break;
+    case VEML7700_GAIN_2: Serial.println("2"); break;
+    case VEML7700_GAIN_1_4: Serial.println("1/4"); break;
+    case VEML7700_GAIN_1_8: Serial.println("1/8"); break;
+  }
+  Serial.print(F("Integration Time (ms): "));
+  switch (veml.getIntegrationTime()) {
+    case VEML7700_IT_25MS: Serial.println("25"); break;
+    case VEML7700_IT_50MS: Serial.println("50"); break;
+    case VEML7700_IT_100MS: Serial.println("100"); break;
+    case VEML7700_IT_200MS: Serial.println("200"); break;
+    case VEML7700_IT_400MS: Serial.println("400"); break;
+    case VEML7700_IT_800MS: Serial.println("800"); break;
+  }  
+}
+
+void logData() {
+  pf(millis());
+  pf(temp.temperature);
+  pf(humidity.relative_humidity);
+  pf(pressure);
+  pf(altitude);
+  pf(lux);
+  pf(accel.acceleration.x);
+  pf(accel.acceleration.y);
+  pf(accel.acceleration.z);
+  pf(gyro.gyro.x);
+  pf(gyro.gyro.y);
+  pf(gyro.gyro.z); 
+  pf(forceV);
+
+  file.println();
+  file.sync();
+}
+
+void transmitData() {
+  LoRa.beginPacket();
+  LoRa.print(temp.temperature); LoRa.print(",");
+  LoRa.print(pressure); LoRa.print(",");
+  LoRa.print(altitude); LoRa.print(",");
+  LoRa.print(sensFlags);
+  LoRa.endPacket();
+}
+
+void printShortData(){
+  spd(millis());
+  spd(temp.temperature);
+  spd(humidity.relative_humidity);
+  spd(pressure);
+  spd(altitude);
+  spd(lux);
+  spd(accel.acceleration.x);
+  spd(accel.acceleration.y);
+  spd(accel.acceleration.z);
+  spd(gyro.gyro.x);
+  spd(gyro.gyro.y);
+  spd(gyro.gyro.z); 
+  spd(forceV);
 }
 
 void printData() {
-    sensors_event_t humidity, temp;
-  
     shtc3.getEvent(&humidity, &temp);// populate temp and humidity objects with fresh data
   
     Serial.print("Temperature: "); Serial.print(temp.temperature); Serial.println(" degrees C");
@@ -438,34 +548,4 @@ void printData() {
     Serial.print(gyro.gyro.z);
     Serial.println(" radians/s ");
     Serial.println();
-}
-
-void logData() {
-    sensors_event_t humidity, temp;
-  
-    shtc3.getEvent(&humidity, &temp);// populate temp and humidity objects with fresh data
-    pf(micros());
-    pf(temp.temperature);
-    pf(humidity.relative_humidity);
-
-    pf(bmp.readTemperature());
-    pf(bmp.readPressure());
-    pf(bmp.readAltitude(1013.25)); /* Adjusted to local forecast! */
-
-      //  /* Get a new normalized sensor event */
-//    sensors_event_t accel;
-//    sensors_event_t gyro;
-//    sensors_event_t itemp;
-//    sox.getEvent(&accel, &gyro, &itemp);
-//
-//    pf(itemp.temperature);
-//
-//    pf(accel.acceleration.x);
-//    pf(accel.acceleration.y);
-//    pf(accel.acceleration.z);
-//    pf(gyro.gyro.x);
-//    pf(gyro.gyro.y);
-//    pf(gyro.gyro.z);
-    file.println();
-    file.sync();
 }
