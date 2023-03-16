@@ -6,7 +6,7 @@
 
 #define spd(s) Serial.print(s);Serial.print(",")
 
-#define MSL_ALT_CONST 1033.25
+#define MSL_ALT_CONST 1026
 
 #define I2C_SDA 20
 #define I2C_SCL 21
@@ -42,7 +42,7 @@ Servo rServo;
 #include <Wire.h>
 #include <Adafruit_BMP280.h>
 
-#define LOCKED_POS 105
+#define LOCKED_POS 120
 #define WIGGLE_POS 70
 #define OPEN_POS 0
 #define DESCENT_THR 10
